@@ -19,4 +19,5 @@ interface IStorage {
     function setTrade(uint256 tradeId, Trade memory trade) external;
     function getTrade(uint256 tradeId) external view returns (Trade memory);
     function getUserTrades(address user) external view returns (uint256[] memory);
+    function removeTrade(uint256 tradeId) external;
 }

@@ -32,6 +32,24 @@ contract Storage is IStorage {
         emit PositionOpened(trade.trader, trade.positionSizeDai, trade.buy, trade.leverage);
     }
 
+    function removeTrade(uint256 tradeId) external onlyTrading {
+        address trader = trades[tradeId].trader;
+        require(trader != address(0), "Trade not found");
+
+        // TODO: remove loop. used just for dev testing.
+        uint256[] storage userTradeList = userTrades[trader];
+        for (uint256 i = 0; i < userTradeList.length; i++) {
+            if (userTradeList[i] == tradeId) {
+                // move last element to removed trade.
+                userTradeList[i] = userTradeList[userTradeList.length - 1];
+                userTradeList.pop();
+                break;
+            }
+        }
+
+        delete trades[tradeId];
+    }
+
     function getTrade(uint256 tradeId) external view override returns (Trade memory) {
         return trades[tradeId];
     }
