@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.27;
 
+import "@openzeppelin/contracts/utils/Pausable.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./interfaces/ILiquidator.sol";
 import "./interfaces/IStorage.sol";
 import "./interfaces/ITrading.sol";
 
-contract Liquidator is ILiquidator, ReentrancyGuard {
+contract Liquidator is ILiquidator, ReentrancyGuard, Pausable, AccessControl {
+    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     uint256 private constant PRECISION = 10000;
 
     IStorage public immutable storageContract;
@@ -22,9 +25,14 @@ contract Liquidator is ILiquidator, ReentrancyGuard {
         storageContract = IStorage(_storage);
         tradingContract = ITrading(_trading);
         thresholds = _thresholds;
+
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(ADMIN_ROLE, msg.sender);
     }
 
     function checkLiquidation(uint256 tradeId) public view override returns (bool) {
+        if (paused()) return false;
+
         IStorage.Trade memory trade = storageContract.getTrade(tradeId);
         if (trade.trader == address(0)) return false;
 
@@ -46,10 +54,7 @@ contract Liquidator is ILiquidator, ReentrancyGuard {
         return positionValue < requiredMargin;
     }
 
-    function liquidate(uint256 tradeId) external override nonReentrant returns (uint256 reward) {
-        // TODO: add pausable
-        // maybe need add cooldown
-
+    function liquidate(uint256 tradeId) external override nonReentrant whenNotPaused returns (uint256 reward) {
         require(checkLiquidation(tradeId), "Position cannot be liquidated");
 
         IStorage.Trade memory trade = storageContract.getTrade(tradeId);
@@ -71,16 +76,22 @@ contract Liquidator is ILiquidator, ReentrancyGuard {
         return reward > maxDiscount ? maxDiscount : reward;
     }
 
-    function setThresholds(LiquidationThresholds memory _thresholds) external {
-        //TODO: add onlyOwner/Admin function
+    function setThresholds(LiquidationThresholds memory _thresholds) external override onlyRole(ADMIN_ROLE) {
         require(_thresholds.maintenanceMargin > 0, "Invalid maintenance margin");
         require(_thresholds.liquidationFee > 0, "Invalid liquidation fee");
         require(_thresholds.maxLiquidationDiscount > 0, "Invalid max discount");
 
         thresholds = _thresholds;
-
         emit ThresholdsUpdated(
             _thresholds.maintenanceMargin, _thresholds.liquidationFee, _thresholds.maxLiquidationDiscount
         );
+    }
+
+    function pause() external onlyRole(ADMIN_ROLE) {
+        _pause();
+    }
+
+    function unpause() external onlyRole(ADMIN_ROLE) {
+        _unpause();
     }
 }

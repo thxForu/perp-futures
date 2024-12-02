@@ -16,6 +16,14 @@ interface IStorage {
         bool buy;
     }
 
+    struct TradeIndex {
+        uint256 arrayIndex;
+        bool exists;
+    }
+
+    event PositionOpened(address indexed trader, uint256 indexed tradeId, uint256 size, bool isLong, uint256 leverage);
+    event PositionRemoved(address indexed trader, uint256 indexed tradeId);
+
     function setTrade(uint256 tradeId, Trade memory trade) external;
     function getTrade(uint256 tradeId) external view returns (Trade memory);
     function getUserTrades(address user) external view returns (uint256[] memory);

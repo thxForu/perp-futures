@@ -25,7 +25,7 @@ contract TradingTest is Test {
         storageContract = new Storage();
         trading = new Trading(address(storageContract), address(dai));
 
-        storageContract.setTradingContract(address(trading));
+        storageContract.grantTradingRole(address(trading));
         trading.setPriceFeed(PAIR_INDEX, address(priceFeed));
 
         dai.mint(trader, INITIAL_DAI);

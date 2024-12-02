@@ -41,7 +41,7 @@ contract LiquidatorTest is Test {
             })
         );
 
-        storageContract.setTradingContract(address(trading));
+        storageContract.grantTradingRole(address(trading));
         trading.setLiquidator(address(liquidator));
         trading.setPriceFeed(PAIR_INDEX, address(priceFeed));
 
