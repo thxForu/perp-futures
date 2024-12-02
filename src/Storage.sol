@@ -25,6 +25,7 @@ contract Storage is IStorage {
     function setTrade(uint256 tradeId, Trade memory trade) external override onlyTrading {
         require(trade.trader != address(0), "Invalid trader");
         require(trade.leverage >= 2, "Min leverage is 2x");
+        require(trade.leverage <= 150, "Max leverage is 150x");
 
         trades[tradeId] = trade;
         userTrades[trade.trader].push(tradeId);

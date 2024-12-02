@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.27;
+
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "./interfaces/ILiquidator.sol";
+import "./interfaces/IStorage.sol";
+import "./interfaces/ITrading.sol";
+
+contract Liquidator is ILiquidator, ReentrancyGuard {
+    uint256 private constant PRECISION = 10000;
+
+    IStorage public immutable storageContract;
+    ITrading public immutable tradingContract;
+    LiquidationThresholds public thresholds;
+
+    constructor(address _storage, address _trading, LiquidationThresholds memory _thresholds) {
+        require(_storage != address(0), "Invalid storage");
+        require(_trading != address(0), "Invalid trading");
+        require(_thresholds.maintenanceMargin > 0, "Invalid maintenance margin");
+        require(_thresholds.liquidationFee > 0, "Invalid liquidation fee");
+
+        storageContract = IStorage(_storage);
+        tradingContract = ITrading(_trading);
+        thresholds = _thresholds;
+    }
+
+    function checkLiquidation(uint256 tradeId) public view override returns (bool) {
+        IStorage.Trade memory trade = storageContract.getTrade(tradeId);
+        if (trade.trader == address(0)) return false;
+
+        uint256 currentPrice = tradingContract.getCurrentPrice(0); // TODO: add pair index to Trade
+        require(currentPrice > 0, "Invalid price");
+
+        int256 unrealizedPnL = tradingContract.calculatePnL(trade, currentPrice);
+
+        uint256 positionValue;
+        if (unrealizedPnL >= 0) {
+            positionValue = trade.positionSizeDai + uint256(unrealizedPnL);
+        } else {
+            positionValue =
+                trade.positionSizeDai > uint256(-unrealizedPnL) ? trade.positionSizeDai - uint256(-unrealizedPnL) : 0;
+        }
+
+        uint256 requiredMargin = (trade.positionSizeDai * thresholds.maintenanceMargin) / PRECISION;
+
+        return positionValue < requiredMargin;
+    }
+
+    function liquidate(uint256 tradeId) external override nonReentrant returns (uint256 reward) {
+        // TODO: add pausable
+        // maybe need add cooldown
+
+        require(checkLiquidation(tradeId), "Position cannot be liquidated");
+
+        IStorage.Trade memory trade = storageContract.getTrade(tradeId);
+        require(trade.trader != address(0), "Trade not found");
+
+        reward = calculateLiquidationReward(trade.positionSizeDai);
+
+        tradingContract.liquidatePosition(tradeId, msg.sender, reward);
+
+        emit PositionLiquidated(tradeId, trade.trader, reward);
+
+        return reward;
+    }
+
+    function calculateLiquidationReward(uint256 positionSize) public view returns (uint256) {
+        uint256 reward = (positionSize * thresholds.liquidationFee) / PRECISION;
+
+        uint256 maxDiscount = (positionSize * thresholds.maxLiquidationDiscount) / PRECISION;
+        return reward > maxDiscount ? maxDiscount : reward;
+    }
+
+    function setThresholds(LiquidationThresholds memory _thresholds) external {
+        //TODO: add onlyOwner/Admin function
+        require(_thresholds.maintenanceMargin > 0, "Invalid maintenance margin");
+        require(_thresholds.liquidationFee > 0, "Invalid liquidation fee");
+        require(_thresholds.maxLiquidationDiscount > 0, "Invalid max discount");
+
+        thresholds = _thresholds;
+
+        emit ThresholdsUpdated(
+            _thresholds.maintenanceMargin, _thresholds.liquidationFee, _thresholds.maxLiquidationDiscount
+        );
+    }
+}

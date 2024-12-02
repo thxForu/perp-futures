@@ -11,6 +11,8 @@ contract Trading is ReentrancyGuard {
 
     uint256 public currentTradeId;
     IStorage public immutable storageContract;
+    address public liquidatorContract;
+
     mapping(uint256 => AggregatorV3Interface) public priceFeeds;
 
     event MarketOrderInitiated(
@@ -20,6 +22,9 @@ contract Trading is ReentrancyGuard {
         uint256 leverage,
         uint256 price,
         uint256 positionSizeDai
+    );
+    event PositionLiquidated(
+        uint256 indexed tradeId, address indexed trader, address indexed liquidator, uint256 price, uint256 reward
     );
 
     constructor(address _storage, address _dai) {
@@ -112,6 +117,37 @@ contract Trading is ReentrancyGuard {
         }
     }
 
+    function liquidatePosition(uint256 tradeId, address liquidator, uint256 reward) external nonReentrant {
+        require(msg.sender == address(liquidatorContract), "Only liquidator");
+
+        IStorage.Trade memory trade = storageContract.getTrade(tradeId);
+        require(trade.trader != address(0), "Trade not found");
+
+        uint256 currentPrice = getCurrentPrice(0);
+        int256 pnl = calculatePnL(trade, currentPrice);
+
+        uint256 remainingBalance = trade.positionSizeDai;
+        if (pnl < 0) {
+            uint256 loss = uint256(-pnl);
+            remainingBalance = remainingBalance > loss ? remainingBalance - loss : 0;
+        }
+
+        require(dai.balanceOf(address(this)) >= reward, "Insufficient contract balance");
+
+        storageContract.removeTrade(tradeId);
+
+        if (reward > 0) {
+            require(dai.transfer(liquidator, reward), "Reward transfer failed");
+        }
+
+        // return remaining balance to trader
+        if (remainingBalance > reward && remainingBalance - reward > 0) {
+            require(dai.transfer(trade.trader, remainingBalance - reward), "Return transfer failed");
+        }
+
+        emit PositionLiquidated(tradeId, trade.trader, liquidator, currentPrice, reward);
+    }
+
     function getCurrentPrice(uint256 _pairIndex) public view returns (uint256) {
         AggregatorV3Interface priceFeed = priceFeeds[_pairIndex];
         require(address(priceFeed) != address(0), "Price feed not found");
@@ -120,6 +156,11 @@ contract Trading is ReentrancyGuard {
         require(price > 0, "Invalid price");
 
         return uint256(price);
+    }
+
+    function setLiquidator(address _liquidator) external {
+        require(_liquidator != address(0), "Invalid liquidator");
+        liquidatorContract = _liquidator;
     }
 
     // for testing
