@@ -81,7 +81,7 @@ contract LiquidatorTest is Test {
         uint256 positionSize = 10000e18;
         uint256 leverage = 20;
 
-        // add balance for commision 
+        // add balance for commision
         dai.mint(trader, positionSize * 2);
 
         vm.startPrank(trader);
