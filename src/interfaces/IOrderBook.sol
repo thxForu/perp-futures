@@ -36,6 +36,14 @@ interface IOrderBook {
         uint256 remainingAmount;
     }
 
+    struct OrderLimits {
+        uint256 minSize;
+        uint256 maxSize;
+        uint256 minLeverage;
+        uint256 maxLeverage;
+        uint256 maxExpiry;
+    }
+
     event OrderCreated(
         uint256 indexed orderId,
         address indexed trader,
