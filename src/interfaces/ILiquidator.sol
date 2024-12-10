@@ -11,7 +11,9 @@ interface ILiquidator {
     function checkLiquidation(uint256 tradeId) external view returns (bool);
     function liquidate(uint256 tradeId) external returns (uint256 reward);
 
-    event PositionLiquidated(uint256 indexed tradeId, address indexed trader, uint256 reward);
+    event PositionLiquidated(
+        uint256 indexed tradeId, address indexed trader, address indexed liquidator, uint256 reward
+    );
 
     function calculateLiquidationReward(uint256 positionSize) external view returns (uint256);
 

@@ -9,12 +9,13 @@ import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 import "./interfaces/IStorage.sol";
 import "./interfaces/ITrading.sol";
 import "./interfaces/IOrderBook.sol";
+import "./interfaces/ITradingPool.sol";
 
 contract Trading is ITrading, ReentrancyGuard, Pausable, AccessControl {
     bytes32 public constant EXECUTOR_ROLE = keccak256("EXECUTOR_ROLE");
 
-    IERC20 public immutable dai;
     uint256 public currentTradeId;
+    ITradingPool public immutable tradingPool;
     IStorage public immutable storageContract;
     IOrderBook public orderBook;
     address public liquidatorContract;
@@ -24,11 +25,12 @@ contract Trading is ITrading, ReentrancyGuard, Pausable, AccessControl {
 
     mapping(uint256 => AggregatorV3Interface) public priceFeeds;
 
-    constructor(address _storage, address _dai) {
+    constructor(address _storage, address _tradingPool) {
         require(_storage != address(0), "Invalid storage");
-        require(_dai != address(0), "Invalid DAI");
+        require(_tradingPool != address(0), "Invalid trading pool");
+
         storageContract = IStorage(_storage);
-        dai = IERC20(_dai);
+        tradingPool = ITradingPool(_tradingPool);
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(EXECUTOR_ROLE, msg.sender);
@@ -53,11 +55,20 @@ contract Trading is ITrading, ReentrancyGuard, Pausable, AccessControl {
         uint256 currentPrice = getCurrentPrice(_pairIndex);
         require(currentPrice > 0, "Invalid price");
 
-        // Calculate and collect fee
+        uint256 baseMargin = _positionSizeDai / _leverage;
         uint256 fee = (_positionSizeDai * tradingFee) / PRECISION;
-        require(dai.transferFrom(msg.sender, address(this), _positionSizeDai + fee), "DAI transfer failed");
+        uint256 requiredMargin = baseMargin + fee;
 
-        // Store trade
+        address trader;
+        if (msg.sender == address(orderBook)) {
+            trader = tx.origin;
+        } else {
+            trader = msg.sender;
+        }
+
+        require(tradingPool.hasEnoughAvailableMargin(trader, requiredMargin), "Insufficient margin");
+        tradingPool.lockMargin(trader, requiredMargin);
+
         tradeId = currentTradeId++;
 
         storageContract.setTrade(
@@ -72,12 +83,12 @@ contract Trading is ITrading, ReentrancyGuard, Pausable, AccessControl {
                 slPrice: _slPrice,
                 orderType: 0,
                 timestamp: block.timestamp,
-                trader: msg.sender,
+                trader: trader,
                 buy: _buy
             })
         );
 
-        emit MarketOrderInitiated(msg.sender, _pairIndex, _buy, _leverage, currentPrice, _positionSizeDai);
+        emit MarketOrderInitiated(trader, _pairIndex, _buy, _leverage, currentPrice, _positionSizeDai);
 
         return tradeId;
     }
@@ -92,19 +103,13 @@ contract Trading is ITrading, ReentrancyGuard, Pausable, AccessControl {
 
         int256 pnl = calculatePnL(trade, currentPrice);
 
-        // Calculate amount to return to trader
-        uint256 amountToReturn;
-        if (pnl >= 0) {
-            amountToReturn = trade.positionSizeDai + uint256(pnl);
-        } else {
-            amountToReturn = trade.positionSizeDai > uint256(-pnl) ? trade.positionSizeDai - uint256(-pnl) : 0;
+        tradingPool.releaseMargin(trade.trader, trade.positionSizeDai + trade.openFee);
+
+        if (pnl > 0) {
+            tradingPool.addProfit(trade.trader, uint256(pnl));
         }
 
-        // Remove trade before transfer to prevent reentrancy
         storageContract.removeTrade(_tradeId);
-
-        // Transfer funds back to trader
-        require(dai.transfer(trade.trader, amountToReturn), "Transfer failed");
 
         emit PositionClosed(trade.trader, _tradeId, currentPrice, pnl);
     }
@@ -114,34 +119,21 @@ contract Trading is ITrading, ReentrancyGuard, Pausable, AccessControl {
         override
         nonReentrant
         whenNotPaused
-        onlyLiquidator
     {
+        require(msg.sender == liquidatorContract, "Only liquidator");
         IStorage.Trade memory trade = storageContract.getTrade(tradeId);
         require(trade.trader != address(0), "Trade not found");
 
         uint256 currentPrice = getCurrentPrice(0);
         int256 pnl = calculatePnL(trade, currentPrice);
 
-        uint256 remainingBalance = trade.positionSizeDai;
-        if (pnl < 0) {
-            uint256 loss = uint256(-pnl);
-            remainingBalance = remainingBalance > loss ? remainingBalance - loss : 0;
+        tradingPool.releaseMargin(trade.trader, trade.positionSizeDai + trade.openFee);
+
+        if (pnl > 0) {
+            tradingPool.addProfit(trade.trader, uint256(pnl));
         }
 
-        require(dai.balanceOf(address(this)) >= reward, "Insufficient contract balance");
-
-        // Remove trade before transfers
         storageContract.removeTrade(tradeId);
-
-        // Transfer reward to liquidator
-        if (reward > 0) {
-            require(dai.transfer(liquidator, reward), "Reward transfer failed");
-        }
-
-        // Return remaining balance to trader
-        if (remainingBalance > reward && remainingBalance - reward > 0) {
-            require(dai.transfer(trade.trader, remainingBalance - reward), "Return transfer failed");
-        }
 
         emit PositionLiquidated(tradeId, trade.trader, liquidator, currentPrice, reward);
     }

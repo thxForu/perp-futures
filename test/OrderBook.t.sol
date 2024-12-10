@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 import "../src/OrderBook.sol";
 import "../src/Storage.sol";
 import "../src/Trading.sol";
+import "../src/TradingPool.sol";
 import "./mocks/MockDai.sol";
 import "./mocks/MockPriceFeed.sol";
 
@@ -12,6 +13,7 @@ contract OrderBookTest is Test {
     OrderBook public orderBook;
     Trading public trading;
     Storage public storageContract;
+    TradingPool public tradingPool;
     MockPriceFeed public priceFeed;
     MockDai public dai;
 
@@ -21,7 +23,7 @@ contract OrderBookTest is Test {
     uint256 public constant INITIAL_PRICE = 2000e8;
     uint256 public constant PAIR_INDEX = 0;
 
-    OrderBook.OrderLimits limits = OrderBook.OrderLimits({
+    IOrderBook.OrderLimits limits = IOrderBook.OrderLimits({
         minSize: 100e18, // 100 DAI
         maxSize: 10000e18, // 10,000 DAI
         minLeverage: 2, // 2x
@@ -34,12 +36,16 @@ contract OrderBookTest is Test {
         priceFeed = new MockPriceFeed(int256(INITIAL_PRICE));
 
         storageContract = new Storage();
-        trading = new Trading(address(storageContract), address(dai));
-        orderBook = new OrderBook(address(storageContract), address(trading), limits);
+        tradingPool = new TradingPool(address(dai));
+        trading = new Trading(address(storageContract), address(tradingPool));
+        orderBook = new OrderBook(address(storageContract), address(trading), address(tradingPool), limits);
 
         storageContract.grantTradingRole(address(trading));
         trading.setOrderBook(address(orderBook));
         orderBook.grantRole(orderBook.EXECUTOR_ROLE(), executor);
+
+        tradingPool.grantTradingRole(address(orderBook));
+        tradingPool.grantTradingRole(address(trading));
 
         trading.setPriceFeed(PAIR_INDEX, address(priceFeed));
 
@@ -47,13 +53,15 @@ contract OrderBookTest is Test {
         dai.mint(address(trading), INITIAL_DAI * 2);
 
         vm.startPrank(trader);
-        dai.approve(address(trading), type(uint256).max);
+        dai.approve(address(tradingPool), type(uint256).max);
+        tradingPool.deposit(INITIAL_DAI);
         vm.stopPrank();
     }
 
     function testInitialSetup() public {
         assertEq(address(orderBook.storageContract()), address(storageContract));
         assertEq(address(orderBook.tradingContract()), address(trading));
+        assertEq(address(orderBook.tradingPool()), address(tradingPool));
 
         (uint256 minSize, uint256 maxSize, uint256 minLev, uint256 maxLev, uint256 maxExp) = orderBook.limits();
         assertEq(minSize, limits.minSize);
@@ -63,6 +71,7 @@ contract OrderBookTest is Test {
         assertEq(maxExp, limits.maxExpiry);
 
         assertTrue(orderBook.hasRole(orderBook.EXECUTOR_ROLE(), executor));
+        assertEq(tradingPool.getAvailableBalance(trader), INITIAL_DAI);
     }
 
     function testCreateLimitOrder() public {
@@ -129,7 +138,7 @@ contract OrderBookTest is Test {
         vm.stopPrank();
     }
 
-    // TODO: 
+    // TODO:
     // function testCreateStopLimitOrder() public {
     //     uint256 size = 1000e18;
     //     uint256 triggerPrice = INITIAL_PRICE * 105 / 100; // 5% above market
@@ -162,7 +171,15 @@ contract OrderBookTest is Test {
         uint256 leverage = 10;
         uint256 expiry = block.timestamp + 1 days;
 
+        uint256 baseMargin = size / leverage;
+        uint256 fee = (size * trading.tradingFee()) / 10000;
+        uint256 totalRequired = baseMargin + fee;
+
         vm.startPrank(trader);
+        dai.mint(trader, totalRequired * 2); // double the required amount for safety
+        dai.approve(address(tradingPool), type(uint256).max);
+        tradingPool.deposit(totalRequired * 2);
+
         uint256 orderId = orderBook.createLimitOrder(
             PAIR_INDEX,
             false, // sell
@@ -173,10 +190,9 @@ contract OrderBookTest is Test {
         );
         vm.stopPrank();
 
-        // Increase price to trigger order
-        priceFeed.setPrice(int256(price));
+        uint256 initialBalance = tradingPool.getAvailableBalance(trader);
 
-        dai.mint(trader, size / 10); // add 10% for fees
+        priceFeed.setPrice(int256(price));
 
         vm.startPrank(executor);
         bool success = orderBook.executeOrder(orderId);
@@ -186,6 +202,8 @@ contract OrderBookTest is Test {
 
         IOrderBook.Order memory order = orderBook.getOrder(orderId);
         assertEq(uint256(order.status), uint256(IOrderBook.OrderStatus.Filled));
+
+        assertEq(tradingPool.getAvailableBalance(trader), initialBalance - totalRequired, "Incorrect margin locked");
     }
 
     function testCancelOrder() public {
@@ -202,6 +220,8 @@ contract OrderBookTest is Test {
 
         IOrderBook.Order memory order = orderBook.getOrder(orderId);
         assertEq(uint256(order.status), uint256(IOrderBook.OrderStatus.Cancelled));
+
+        assertEq(tradingPool.getAvailableBalance(trader), INITIAL_DAI);
     }
 
     function testCannotCancelOtherTraderOrder() public {
@@ -287,5 +307,12 @@ contract OrderBookTest is Test {
         // lower price to make executable
         priceFeed.setPrice(int256(price));
         assertTrue(orderBook.checkOrderExecutable(orderId));
+
+        // withdraw all funds to make order not executable
+        vm.startPrank(trader);
+        tradingPool.withdraw(INITIAL_DAI);
+        vm.stopPrank();
+
+        assertFalse(orderBook.checkOrderExecutable(orderId), "Order should not be executable without funds");
     }
 }

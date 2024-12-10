@@ -7,6 +7,7 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./interfaces/ILiquidator.sol";
 import "./interfaces/IStorage.sol";
 import "./interfaces/ITrading.sol";
+import "./interfaces/ITradingPool.sol";
 
 contract Liquidator is ILiquidator, ReentrancyGuard, Pausable, AccessControl {
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
@@ -14,16 +15,19 @@ contract Liquidator is ILiquidator, ReentrancyGuard, Pausable, AccessControl {
 
     IStorage public immutable storageContract;
     ITrading public immutable tradingContract;
+    ITradingPool public immutable tradingPool;
     LiquidationThresholds public thresholds;
 
-    constructor(address _storage, address _trading, LiquidationThresholds memory _thresholds) {
+    constructor(address _storage, address _trading, address _tradingPool, LiquidationThresholds memory _thresholds) {
         require(_storage != address(0), "Invalid storage");
         require(_trading != address(0), "Invalid trading");
+        require(_tradingPool != address(0), "Invalid trading pool");
         require(_thresholds.maintenanceMargin > 0, "Invalid maintenance margin");
         require(_thresholds.liquidationFee > 0, "Invalid liquidation fee");
 
         storageContract = IStorage(_storage);
         tradingContract = ITrading(_trading);
+        tradingPool = ITradingPool(_tradingPool);
         thresholds = _thresholds;
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
@@ -60,12 +64,17 @@ contract Liquidator is ILiquidator, ReentrancyGuard, Pausable, AccessControl {
         IStorage.Trade memory trade = storageContract.getTrade(tradeId);
         require(trade.trader != address(0), "Trade not found");
 
+        // calculate reward for liquidator
         reward = calculateLiquidationReward(trade.positionSizeDai);
 
-        tradingContract.liquidatePosition(tradeId, msg.sender, reward);
+        tradingPool.releaseMargin(trade.trader, trade.positionSizeDai + trade.openFee);
 
-        emit PositionLiquidated(tradeId, trade.trader, reward);
+        // pay liquidator reward through trading pool
+        tradingPool.transferReward(msg.sender, reward);
 
+        storageContract.removeTrade(tradeId);
+
+        emit PositionLiquidated(tradeId, trade.trader, msg.sender, reward);
         return reward;
     }
 

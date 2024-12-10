@@ -80,4 +80,17 @@ contract Storage is IStorage, AccessControl {
         require(tradingContract != address(0), "Invalid trading contract");
         revokeRole(TRADING_ROLE, tradingContract);
     }
+
+    function getUserTradesCount(address user) external view returns (uint256) {
+        return userTrades[user].length;
+    }
+
+    function getTradeExists(uint256 tradeId) external view returns (bool) {
+        return tradeIndexes[tradeId].exists;
+    }
+
+    function getTradeIndex(uint256 tradeId) external view returns (uint256) {
+        require(tradeIndexes[tradeId].exists, "Trade index not found");
+        return tradeIndexes[tradeId].arrayIndex;
+    }
 }

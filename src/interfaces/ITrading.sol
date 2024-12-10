@@ -35,4 +35,6 @@ interface ITrading {
     function calculatePnL(IStorage.Trade memory trade, uint256 currentPrice) external pure returns (int256);
 
     function getCurrentPrice(uint256 pairIndex) external view returns (uint256);
+
+    function tradingFee() external view returns (uint256);
 }

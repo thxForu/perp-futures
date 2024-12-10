@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 import "../src/Liquidator.sol";
 import "../src/Storage.sol";
 import "../src/Trading.sol";
+import "../src/TradingPool.sol";
 import "./mocks/MockDai.sol";
 import "./mocks/MockPriceFeed.sol";
 
@@ -12,6 +13,7 @@ contract LiquidatorTest is Test {
     Liquidator public liquidator;
     Trading public trading;
     Storage public storageContract;
+    TradingPool public tradingPool;
     MockPriceFeed public priceFeed;
     MockDai public dai;
 
@@ -34,6 +36,7 @@ contract LiquidatorTest is Test {
         liquidator = new Liquidator(
             address(storageContract),
             address(trading),
+            address(tradingPool),
             ILiquidator.LiquidationThresholds({
                 maintenanceMargin: MAINTENANCE_MARGIN,
                 liquidationFee: LIQUIDATION_FEE,

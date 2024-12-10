@@ -7,16 +7,9 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./interfaces/IOrderBook.sol";
 import "./interfaces/IStorage.sol";
 import "./interfaces/ITrading.sol";
+import "./interfaces/ITradingPool.sol";
 
 contract OrderBook is IOrderBook, Pausable, AccessControl, ReentrancyGuard {
-    struct OrderLimits {
-        uint256 minSize;
-        uint256 maxSize;
-        uint256 minLeverage;
-        uint256 maxLeverage;
-        uint256 maxExpiry;
-    }
-
     bytes32 public constant EXECUTOR_ROLE = keccak256("EXECUTOR_ROLE");
 
     mapping(uint256 => Order) public orders;
@@ -28,8 +21,9 @@ contract OrderBook is IOrderBook, Pausable, AccessControl, ReentrancyGuard {
 
     IStorage public immutable storageContract;
     ITrading public immutable tradingContract;
+    ITradingPool public immutable tradingPool;
 
-    constructor(address _storage, address _trading, OrderLimits memory _limits) {
+    constructor(address _storage, address _trading, address _tradingPool, OrderLimits memory _limits) {
         require(_storage != address(0), "Invalid storage");
         require(_trading != address(0), "Invalid trading");
         require(_limits.minSize > 0, "Invalid min size");
@@ -40,6 +34,7 @@ contract OrderBook is IOrderBook, Pausable, AccessControl, ReentrancyGuard {
 
         storageContract = IStorage(_storage);
         tradingContract = ITrading(_trading);
+        tradingPool = ITradingPool(_tradingPool);
         limits = _limits;
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
@@ -62,6 +57,10 @@ contract OrderBook is IOrderBook, Pausable, AccessControl, ReentrancyGuard {
         OrderType orderType,
         uint256 triggerPrice
     ) internal returns (uint256) {
+        uint256 requiredMargin = calculateRequiredMargin(size, leverage);
+
+        require(tradingPool.hasEnoughAvailableMargin(msg.sender, requiredMargin), "Insufficient margin");
+
         uint256 orderId = currentOrderId++;
 
         orders[orderId] = Order({
@@ -85,6 +84,14 @@ contract OrderBook is IOrderBook, Pausable, AccessControl, ReentrancyGuard {
         orderIndexes[orderId] = userOrders[msg.sender].length - 1;
 
         return orderId;
+    }
+
+    function calculateRequiredMargin(uint256 size, uint256 leverage) internal view returns (uint256) {
+        uint256 baseMargin = size / leverage;
+
+        uint256 fee = (size * tradingContract.tradingFee()) / 10000;
+
+        return baseMargin + fee;
     }
 
     function createLimitOrder(
@@ -136,6 +143,11 @@ contract OrderBook is IOrderBook, Pausable, AccessControl, ReentrancyGuard {
             return false;
         }
 
+        uint256 requiredMargin = calculateRequiredMargin(order.size, order.leverage);
+        if (!tradingPool.hasEnoughAvailableMargin(order.trader, requiredMargin)) {
+            return false;
+        }
+
         uint256 currentPrice = tradingContract.getCurrentPrice(order.pairIndex);
 
         if (order.orderType == OrderType.StopLimit) {
@@ -155,8 +167,6 @@ contract OrderBook is IOrderBook, Pausable, AccessControl, ReentrancyGuard {
         Order storage order = orders[orderId];
         require(_validateExecution(order), "Order not executable");
 
-        uint256 currentPrice = tradingContract.getCurrentPrice(order.pairIndex);
-
         uint256 tradeId =
             tradingContract.initiateMarketOrder(order.pairIndex, order.buy, order.leverage, order.size, 0, 0);
 
@@ -166,7 +176,7 @@ contract OrderBook is IOrderBook, Pausable, AccessControl, ReentrancyGuard {
 
         _removeOrder(orderId);
 
-        emit OrderFilled(orderId, currentPrice, order.size, 0);
+        emit OrderFilled(orderId, tradingContract.getCurrentPrice(order.pairIndex), order.size, 0);
 
         return true;
     }
